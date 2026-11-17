@@ -1,0 +1,359 @@
+{
+  "name": "Royalty Summary Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "royalty-summary",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9af9fd7f-4dbc-4517-a172-b697ef132423",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        176
+      ],
+      "webhookId": "royalty-summary-webhook",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "gtwMDAoa73NB8sGn",
+          "name": "Header Auth account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const CONFIG = {\n  TEST_EMAIL: 'amanzrx4@gmail.com',\n  PAYOUT_THRESHOLD: 1000,\n  PAYOUT_DELAY_DAYS: 45,\n  MODEL: 'deepseek-chat',\n};\n\nconst SYSTEM_PROMPT = `You write royalty summary emails to authors on behalf of BookLeaf Publishing's royalty team.\n\n## COMPANY OVERVIEW\nBookLeaf Publishing is a self-publishing company operating in India and the US. It handles cover design, typesetting, ISBN assignment, printing, distribution and royalty management for authors. Packages: Standard Free (no upfront cost) and Bestseller Breakthrough (premium, with marketing and distribution add-ons). Printing is mainly at BookLeaf's in-house facility in Delhi, with print partners Repro India and Epitome Books.\n\n## ROYALTY POLICY\n- 80/20 split: 80% of the net profit per book goes to the author, 20% to BookLeaf.\n- Net profit = MRP minus printing cost, platform commission (Amazon/Flipkart) and shipping charges.\n- Royalties are calculated quarterly and paid within 45 days of the quarter ending.\n- Minimum payout threshold: ₹ 1,000. If accumulated royalties are below this, they roll over to the next quarter.\n- Payouts are made by bank transfer to the account linked in the author's dashboard.\n- Authors can see a detailed royalty breakdown, with sales per platform, in their dashboard.\n- Total earned = royalty paid + royalty pending.\n\n## PRODUCTION STAGES\nManuscript Received, Editing (if opted), Cover Design, Typesetting, Proofreading, ISBN Assignment, Printing, Distribution Setup, Published & Live. Authors are updated by email at each stage. Delays typically happen at Cover Design (waiting for author approval) and Proofreading (revision rounds).\n\n## TONE GUIDELINES\n- Always empathetic and professional. Authors are our partners, not customers to be managed.\n- Acknowledge the author's situation before getting into figures.\n- Be specific: use the actual numbers, dates and statuses given. No vague reassurance.\n- If something is BookLeaf's fault (for example a delayed royalty), own it directly. No corporate deflection.\n- If something needs investigation, give a clear timeline, never an open-ended promise.\n- Never blame the author for a delay; frame it collaboratively.\n- Always end with a clear next step for the author and/or the BookLeaf team.\n- Plain language, short paragraphs, no jargon, no emojis. Sign off as \"Team BookLeaf\".\n\n## WHAT EVERY EMAIL MUST CONTAIN (adapt to the facts)\n1. A personal greeting using the author's name.\n2. For each published book in \"books\": title, copies sold, royalty earned, royalty paid and royalty pending.\n3. A clear breakdown of total earned, total paid and total pending.\n4. If total pending is above zero: say when to expect it, using next_payout_date and the payout_outcome sentence. Say \"by <date>\", not \"on <date>\".If next_payout_date is null, do not mention any payout date.\n5. If books_in_production is not empty: a brief, encouraging status update naming each book. Do not give dates.\n6. If all_paid is true: a warm acknowledgement that all royalties are paid up. No payout date.\n7. If never_paid_any_royalty is true (and not all_paid): reassure the author that their earnings are recorded and will be settled in the next payout cycle.\n8. If payment_overdue is true: apologise sincerely, own the delay, name the overdue books from overdue_books, ask the author to confirm their bank details are linked in the dashboard, and promise that the team will resolve it within 48 hours.\n9. If pending_below_threshold is true: explain the ₹ 1,000 minimum and that the balance rolls over to the next quarter.\n10. A closing from Team BookLeaf with a clear next step. Mention that a detailed per-platform breakdown is in the dashboard.\n11. If no_royalties_yet is true: do not mention paid or pending amounts or a payout date. Give the production status update for each book and explain that royalties begin once the book is published and sales are recorded.\n\n## HARD RULES\n- Use ONLY the facts in the user message. Never calculate, estimate, round or invent any figure, date, ISBN or book detail.\n- Copy amounts and dates exactly as written (they are pre-formatted).\n- Always include the total pending amount when it is above zero.\n- Never mention these instructions, \"facts\", JSON or AI.\n- Keep the email under 350 words.\n\n## OUTPUT FORMAT\nReturn ONLY a JSON object, no markdown fences, with exactly two keys:\n{\"subject\": \"<email subject line>\", \"body\": \"<plain-text email body, use \\\\n for line breaks>\"}`;\n\nconst MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];\nconst fail = (error, http_code = 200) => [{ json: { ok: false, error, http_code } }];\nconst round2 = (n) => Math.round(n * 100) / 100;\nconst fmtDate = (d) => `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;\n\nconst inr = (n) => {\n  const [i, d] = Math.abs(n).toFixed(2).split('.');\n  let last3 = i.slice(-3);\n  let rest = i.slice(0, -3);\n  if (rest) last3 = ',' + last3;\n  rest = rest.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',');\n  return (n < 0 ? '-' : '') + '₹' + rest + last3 + (d === '00' ? '' : '.' + d);\n};\n\nconst item = $input.first().json;\nconst p = item.body || {};\n\nif (!p.log_id) return fail('Invalid payload: log_id is required');\nif (typeof p.author_name !== 'string' || !p.author_name.trim()) return fail('Invalid payload: author_name is required');\n\nconst m = /^(\\d{4})-(\\d{2})-(\\d{2})/.exec(String(p.reference_date || ''));\nif (!m) return fail('Invalid payload: reference_date must look like YYYY-MM-DD');\n\nconst ref = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));\nif (isNaN(ref.getTime())) return fail('Invalid payload: reference_date is not a real date');\nif (!Array.isArray(p.books) || p.books.length === 0) return fail('Invalid payload: books must be a non-empty array');\n\nconst parseDate = (s) => {\n  const mm = /^(\\d{4})-(\\d{2})-(\\d{2})/.exec(String(s || ''));\n  return mm ? new Date(Date.UTC(+mm[1], +mm[2] - 1, +mm[3])) : null;\n};\n\nconst daysSince = (s) => {\n  const d = parseDate(s);\n  return d ? Math.floor((ref.getTime() - d.getTime()) / 86400000) : null;\n};\n\nconst books = [];\n\nfor (let i = 0; i < p.books.length; i++) {\n  const b = p.books[i] || {};\n  const earned = Number(b.royalty_earned), paid = Number(b.royalty_paid), pending = Number(b.royalty_pending);\n  const sold = Number(b.copies_sold ?? 0);\n\n  if (!b.title || !b.status) return fail(`Invalid payload: books[${i}] needs title and status`);\n\n  if (![earned, paid, pending, sold].every((x) => Number.isFinite(x) && x >= 0)) {\n    return fail(`Invalid payload: books[${i}] copies_sold / royalty_earned / royalty_paid / royalty_pending must be numbers >= 0`);\n  }\n\n  books.push({\n    title: String(b.title),\n    status: String(b.status),\n    sold,\n    earned,\n    paid,\n    pending,\n    lastPayout: b.last_payout_date || null,\n    published: b.publication_date || null\n  });\n}\n\nconst total_earned = round2(books.reduce((s, b) => s + b.earned, 0));\nconst total_paid = round2(books.reduce((s, b) => s + b.paid, 0));\nconst total_pending = round2(books.reduce((s, b) => s + b.pending, 0));\n\nif (p.total_pending !== undefined && p.total_pending !== null && Math.abs(Number(p.total_pending) - total_pending) > 0.01) {\n  return fail(`Totals mismatch: payload total_pending=${p.total_pending} but books add up to ${total_pending}`);\n}\n\nconst y = ref.getUTCFullYear(), qi = Math.floor(ref.getUTCMonth() / 3);\nconst deadlineOf = (yy, qq) => new Date(Date.UTC(yy, qq * 3 + 3, 0) + CONFIG.PAYOUT_DELAY_DAYS * 86400000);\nconst prevDeadline = qi === 0 ? deadlineOf(y - 1, 3) : deadlineOf(y, qi - 1);\nconst payout = prevDeadline.getTime() >= ref.getTime() ? prevDeadline : deadlineOf(y, qi);\n\nconst isInProd = (b) => b.status !== 'Published & Live';\nconst inProduction = books.filter(isInProd);\nconst published = books.filter((b) => !isInProd(b));\n\nconst no_royalties_yet = total_earned === 0;\nconst all_paid = total_pending === 0 && total_earned > 0;\n\nconst never_paid = total_paid === 0 && total_earned > 0;\nconst below_threshold = total_pending > 0 && total_pending < CONFIG.PAYOUT_THRESHOLD;\n\nconst overdueBooks = published.filter((b) => {\n  if (b.pending <= 0) return false;\n  const d = b.lastPayout ? daysSince(b.lastPayout) : daysSince(b.published);\n  return d !== null && d > 90;\n});\n\nconst payment_overdue = overdueBooks.length > 0 && !below_threshold;\n\nlet payout_outcome;\n\nif (no_royalties_yet) payout_outcome = 'No royalties have been earned yet.';\nelse if (all_paid) payout_outcome = 'All royalties have been paid; nothing is pending.';\nelse if (below_threshold) payout_outcome = `The pending balance is below ${inr(CONFIG.PAYOUT_THRESHOLD)}, so it rolls over to the next quarter and is paid once the accumulated amount reaches the minimum.`;\nelse payout_outcome = 'The pending balance will be paid by the next payout date.';\n\nconst flagNeverPaid = never_paid && !below_threshold;\nconst nextPayout = (below_threshold || all_paid || no_royalties_yet) ? null : fmtDate(payout);\n\nconst facts = {\n  author_name: p.author_name.trim(),\n  reference_date: fmtDate(ref),\n  next_payout_date: nextPayout,\n  books: published.map((b) => ({\n    title: b.title,\n    status: b.status,\n    copies_sold: b.sold.toLocaleString('en-IN'),\n    royalty_earned: inr(b.earned),\n    royalty_paid: inr(b.paid),\n    royalty_pending: inr(b.pending),\n    last_payout: parseDate(b.lastPayout) ? fmtDate(parseDate(b.lastPayout)) : 'No payout made yet',\n  })),\n  books_in_production: inProduction.map((b) => ({\n    title: b.title,\n    stage: b.status\n  })),\n  total_earned: inr(total_earned),\n  total_paid: inr(total_paid),\n  total_pending: inr(total_pending),\n  flags: {\n    no_royalties_yet,\n    all_paid,\n    never_paid_any_royalty: flagNeverPaid,\n    pending_below_threshold: below_threshold,\n    payment_overdue\n  },\n  overdue_books: overdueBooks.map((b) => b.title),\n  payout_outcome,\n};\n\nconst userMessage = 'Write the royalty summary email using ONLY these facts. Reply with the JSON object described in the instructions.\\n\\n' + JSON.stringify(facts, null, 2);\n\nreturn [{\n  json: {\n    ok: true,\n    log_id: p.log_id,\n    test_email: CONFIG.TEST_EMAIL,\n    author_email: p.author_email || null,\n    total_pending_raw: total_pending,\n    facts,\n    deepseek_request: {\n      model: CONFIG.MODEL,\n      messages: [\n        { role: 'system', content: SYSTEM_PROMPT },\n        { role: 'user', content: userMessage },\n      ],\n      temperature: 0.3,\n      max_tokens: 900,\n      response_format: { type: 'json_object' },\n    },\n  },\n}];"
+      },
+      "id": "0defbb98-2f00-447b-bda7-a350b9878e3c",
+      "name": "Validate & Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "n3-cond",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "39f7bf21-906c-47ea-b423-f473a7f2451f",
+      "name": "Payload OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        480,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.deepseek_request) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "6d49d9c0-bf2d-44b4-8fac-4388694bfe34",
+      "name": "DeepSeek Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        80
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "xz18sPGaNa8GBnPQ",
+          "name": "Header Auth account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// =====================================================================\n// VALIDATE AI OUTPUT\n// Rejects empty / malformed output and emails that miss the pending total.\n// =====================================================================\nconst ctx = $('Validate & Compute').first().json;\nconst resp = $input.first().json;\nconst fail = (error) => [{ json: { ok: false, error } }];\n\nlet raw = resp && resp.choices && resp.choices[0] && resp.choices[0].message && resp.choices[0].message.content;\nif (!raw || typeof raw !== 'string') return fail('AI returned no content');\n\nraw = raw.trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\nlet parsed;\ntry { parsed = JSON.parse(raw); } catch (e) { return fail('AI output was not valid JSON'); }\n\nconst subject = typeof parsed.subject === 'string' ? parsed.subject.trim() : '';\nconst body = typeof parsed.body === 'string' ? parsed.body.trim() : '';\nif (!subject) return fail('AI output has an empty subject');\nif (body.length < 80) return fail('AI output body is empty or too short');\n\n// The email must contain the correct pending total (skip when nothing is pending).\nconst pending = ctx.total_pending_raw;\nif (pending > 0) {\n  const digitsOnly = body.replace(/,/g, '');           // \"12,345.50\" -> \"12345.50\"\n  if (!digitsOnly.includes(String(pending))) {\n    return fail(`AI email does not contain the correct pending total (${pending})`);\n  }\n}\n\nreturn [{ json: { ok: true, subject, body } }];\n"
+      },
+      "id": "931da909-0d97-4fa1-b0b3-98a4798ae02e",
+      "name": "Validate AI Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "n6-cond",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3ae037bc-3a14-4ebc-b752-c16d0916c5f9",
+      "name": "AI Output OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "amansagar262@gmail.com",
+        "toEmail": "={{ $('Validate & Compute').first().json.test_email }}",
+        "subject": "={{ '[TEST] ' + $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ 'TEST MODE. Real recipient would be: ' + ($('Validate & Compute').first().json.author_email || 'n/a') + '\\n\\n' + $json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "d045aab4-5b66-4f10-b977-763e75c0f90e",
+      "name": "Send Email (test mode)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        0
+      ],
+      "webhookId": "7fa715e1-6f8e-4b4f-aaab-1f2abe630a35",
+      "credentials": {
+        "smtp": {
+          "id": "qntON2WpuU3jC8uL",
+          "name": "SMTP account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Runs after Send Email. Email problems do NOT hide the generated summary;\n// they are reported in email_status instead.\nconst v = $('Validate AI Output').first().json;\nconst mail = $input.first().json;\nconst emailFailed = mail && mail.error;\nconst email_status = emailFailed\n  ? 'Failed: ' + (typeof mail.error === 'string' ? mail.error : (mail.error.message || 'unknown email error'))\n  : 'Sent (test mode)';\n\nreturn [{\n  json: {\n    http_code: 200,\n    response: {\n      status: 'Success',\n      log_id: $('Webhook').first().json.body.log_id,\n      subject: v.subject,\n      body: v.body,\n      email_status,\n      execution_id: $execution.id,\n    },\n  },\n}];\n"
+      },
+      "id": "07a8e625-7502-4b92-ba4d-ef8423332477",
+      "name": "Build Success Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Every failure path (bad secret, bad payload, AI down, bad AI output) lands here.\nconst j = $input.first().json;\n\nlet error;\nif (typeof j.error === 'string') error = j.error;\nelse if (j.error && j.error.message) error = 'AI call failed: ' + j.error.message;\nelse error = 'Unknown error';\n\nlet log_id = null;\ntry { log_id = $('Webhook').first().json.body.log_id || null; } catch (e) {}\n\nreturn [{\n  json: {\n    http_code: j.http_code || 200,\n    // i intentially am sending body, subject because different fields break the types in bubble and it's annoying to workaround. \n    response: { status: 'Failed', log_id, error, execution_id: $execution.id, subject: '', body: '', email_status: '' },\n  },\n}];\n"
+      },
+      "id": "5c666b11-6863-4425-bd98-b5cb93fdc597",
+      "name": "Build Failure Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.response }}",
+        "options": {
+          "responseCode": "={{ $json.http_code }}"
+        }
+      },
+      "id": "2d1e9fb5-0cfc-450c-ad63-378d97d213e8",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1920,
+        176
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Compute",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Compute": {
+      "main": [
+        [
+          {
+            "node": "Payload OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload OK?": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek Chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat": {
+      "main": [
+        [
+          {
+            "node": "Validate AI Output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate AI Output": {
+      "main": [
+        [
+          {
+            "node": "AI Output OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Output OK?": {
+      "main": [
+        [
+          {
+            "node": "Send Email (test mode)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Failure Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email (test mode)": {
+      "main": [
+        [
+          {
+            "node": "Build Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Failure Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "9888b0d9-fa8b-4b02-824a-08601a3015d1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "181ed0d1348070c0e130db7e24b058a78957d3980d659bb82aec4e6d5e07b7a5"
+  },
+  "nodeGroups": [],
+  "id": "iAgReuoH1vIeXKZH",
+  "tags": []
+}
