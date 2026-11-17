@@ -117,6 +117,33 @@ How it works: send_summary calls n8n and waits for the reply. A callback from n8
 - Double clicks: the Send button is disabled while that author has a summary in progress, and the workflow checks the same condition before it runs.
 - Trade-off of waiting instead of a callback: if n8n finishes after Bubble has stopped waiting, the email can still be sent while the log shows Timed out.
 
+## Request flow and timeouts (free plan)
+
+The free plan has no Workflow API, so n8n can't call Bubble back. Bubble waits for n8n's reply
+instead, inside the backend workflow send_summary, so the admin's screen is never blocked.
+
+Each send ends in exactly one of three outcomes:
+
+1. Reply received
+   - Success  -> log = Success, with subject, body, execution id
+   - Failed   -> log = Failed, with n8n's reason (bad payload, AI error or 30 s AI timeout,
+                 bad AI output)
+
+2. Call errors (n8n down, wrong secret -> 403)
+   - "Include errors in response" lets the workflow continue -> log = Failed
+
+3. No reply (Bubble stops waiting first)
+   - log stays Processing; after 2 minutes the admin list shows "Timed out" in red
+     (re-checked every 10 s), so nobody waits on a spinner
+
+Log states: Queued -> Processing -> Success | Failed | Timed out (display only)
+
+Idempotency: the Send button is disabled, and its workflow refuses to run, while that author
+has a Queued or Processing log less than 2 minutes old.
+
+Trade-off: in case 3, n8n may still finish and send the email while the log shows Timed out.
+A callback would fix this, but it needs a paid plan.
+
 ## Assumptions
 
 - The ₹1,000 minimum applies to the author's total pending amount. Kavita's book still shows red by the 90-day rule, with a small "rolls over" note beside it.
