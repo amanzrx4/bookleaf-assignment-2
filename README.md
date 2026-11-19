@@ -9,6 +9,7 @@ Bubble + n8n + DeepSeek.
 - Admin: admin@bookleaf.test / password - mentioned in email
 - Authors: priya.sharma@email.com, farhan.sheikh@email.com, kavita.deshmukh@email.com / password - mentioned in email
 - n8n workflow: n8n/royalty-summary-workflow.json
+- loom video: shared in email
 
 Good authors to test with: Priya (one book paid, one pending), Farhan (all paid), Kavita (one book in production, ₹850 pending, below the ₹1,000 minimum).
 
